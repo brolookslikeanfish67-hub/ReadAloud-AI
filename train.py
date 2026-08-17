@@ -1,5 +1,5 @@
 # =====================================================================
-# Master Orchestration Runtime for Training and Speech Synthesis
+# Multi-threaded Orchestration Runtime with Weight Auto-Saving
 # =====================================================================
 
 import os
@@ -8,148 +8,174 @@ import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader
 
-# Import your previously written custom architectural files
-from dataset import InsaneEmiliaDataset, emilia_smart_collate_fn
+# Import your custom modular files from the repository directory
+from dataset import BestEmiliaStreamingPipeline, emilia_smart_collate_fn
 from tokenizer import ContinuousAudioTokenizer
 from model import HighFidelityOmniVoiceEngine
 
-def execute_complete_pipeline(dataset_directory="./emilia_raw_data", epochs=3, batch_size=2):
-    """
-    Main orchestration function handling initialization, dataset compilation,
-    joint network optimization passes, and final zero-shot speech synthesis.
-    """
-    # 1. Device Hardware Discovery Selection
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[*] Initializing processing architecture execution grid on tool: {device}")
+def save_system_checkpoint(tokenizer, model, optimizer, step_count, filepath="omnivoice_checkpoint.pt"):
+    """Saves complete model weights, optimizer matrices, and timeline states to disk."""
+    checkpoint_state = {
+        'step_count': step_count,
+        'tokenizer_state_dict': tokenizer.state_dict(),
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }
+    torch.save(checkpoint_state, filepath)
+    print(f"[+] System Checkpoint Auto-Saved Successfully: '{filepath}' at step {step_count}")
 
-    # 2. Data Infrastructure Pipeline Initialization
-    # Enforces uniform frame sizes: 16,000Hz * 3 seconds = 48,000 max samples
+def load_system_checkpoint(tokenizer, model, optimizer, filepath="omnivoice_checkpoint.pt"):
+    """Resumes structural weights and tracking state metrics from a saved checkpoint."""
+    if os.path.exists(filepath):
+        print(f"[*] Found existing checkpoint asset file: '{filepath}'. Resuming training...")
+        checkpoint_state = torch.load(filepath, map_location=next(model.parameters()).device)
+        tokenizer.load_state_dict(checkpoint_state['tokenizer_state_dict'])
+        model.load_state_dict(checkpoint_state['model_state_dict'])
+        optimizer.load_state_dict(checkpoint_state['optimizer_state_dict'])
+        return checkpoint_state['step_count']
+    print("[*] No prior checkpoint files detected on disk. Initializing a clean training run.")
+    return 0
+
+def run_production_training_framework(max_steps=10000, checkpoint_interval=500, batch_size=4):
+    """
+    Master execution runtime wrapper optimized for real-world continuous data streaming,
+    joint loss balance updates, and automated checkpoint tracking.
+    """
+    # 1. Device Hardware Routing Configuration
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[*] Activating system processing grid on target hardware tool: {device}")
+
+    # 2. Match Audio Framework Constraints
     target_sample_rate = 16000
-    max_audio_samples = 48000
+    max_audio_samples = 48000 # 3.0 seconds at 16kHz
     
-    print("[*] Building multi-lingual dataset collection frameworks...")
-    emilia_dataset = InsaneEmiliaDataset(
-        dataset_root=dataset_directory, 
-        sample_rate=target_sample_rate, 
-        max_audio_samples=max_audio_samples
+    # 3. Instantiate the Multi-Threaded Live Streaming Pipeline
+    print("[*] Spawning network prefetch pipelines for target text strings...")
+    best_dataset = BestEmiliaStreamingPipeline(
+        hf_token=None, # Replace with a string token if reading gated splits
+        sample_rate=target_sample_rate,
+        max_audio_samples=max_audio_samples,
+        prefetch_buffer_size=32 # Caches up to 32 tensor blocks inside background RAM arrays
     )
     
+    # Pack using standard dataloading utilities
     data_loader = DataLoader(
-        emilia_dataset, 
+        best_dataset, 
         batch_size=batch_size, 
-        shuffle=True, 
         collate_fn=emilia_smart_collate_fn
     )
 
-    # 3. Model Subsystem Instantiations
-    print("[*] Instantiating neural components and structural modules...")
+    # 4. Core Network Component Assemblies
+    print("[*] Building engine matrix networks...")
     audio_tokenizer = ContinuousAudioTokenizer(embed_dim=256).to(device)
     omni_voice_core = HighFidelityOmniVoiceEngine(embed_dim=256, max_diffusion_steps=50).to(device)
 
-    # Combine all parameters into a unified AdamW optimizer tracking routine
-    combined_parameters = list(audio_tokenizer.parameters()) + list(omni_voice_core.parameters())
-    optimizer = torch.optim.AdamW(combined_parameters, lr=1e-4, weight_decay=1e-2)
+    # Combine architectural components inside a unified AdamW optimizer tracking sweep
+    combined_params = list(audio_tokenizer.parameters()) + list(omni_voice_core.parameters())
+    optimizer = torch.optim.AdamW(combined_params, lr=1e-4, weight_decay=1e-2)
 
-    # 4. COMPOSITE TRAINING OPTIMIZATION LOOP
-    print(f"\n[+] Launching System Optimization Sequence ({epochs} Total Epochs):")
-    print("=" * 85)
+    # 5. Checkpoint Lifecycle Verification
+    global_step = load_system_checkpoint(audio_tokenizer, omni_voice_core, optimizer)
+
+    # 6. MASTER CONTINUOUS MULTI-MODAL OPTIMIZATION RUN
+    print(f"\n[+] Entering Enterprise Training Matrix Loops (Targeting {max_steps} Global Steps):")
+    print("=" * 90)
     
-    for epoch in range(1, epochs + 1):
-        audio_tokenizer.train()
-        omni_voice_core.train()
+    audio_tokenizer.train()
+    omni_voice_core.train()
+
+    # Create an iterator over our continuous live web data stream
+    stream_iterator = iter(data_loader)
+
+    while global_step < max_steps:
+        try:
+            # Retrieve the next multi-threaded pre-fetched data batch
+            waveforms, text_tokens = next(stream_iterator)
+        except StopIteration:
+            # Reinitializes the streaming channel connection if the dataset reaches its boundaries
+            print("[*] Live stream cycle completed. Refreshing stream connections...")
+            stream_iterator = iter(data_loader)
+            waveforms, text_tokens = next(stream_iterator)
+        except Exception as e:
+            # Catch network dropping errors safely to keep training runtime live
+            continue
+
+        waveforms = waveforms.to(device)
+        text_tokens = text_tokens.to(device)
+
+        optimizer.zero_grad()
+
+        # --- SUB-LOSS A: SYMMETRIC VAE AUDIO AUTOENCODER ---
+        reconstructed_audio, mu, logvar = audio_tokenizer(waveforms)
+        recon_loss = F.mse_loss(reconstructed_audio, waveforms)
+        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / waveforms.size(0)
+
+        # --- SUB-LOSS B: CROSS-ATTENTION LATENT DIFFUSION SPEECH MODULE ---
+        with torch.no_grad():
+            latent_z, _, _ = audio_tokenizer.encoder(waveforms)
+            
+        timesteps = torch.randint(0, omni_voice_core.max_steps, (waveforms.size(0),), device=device)
+        noise_targets = torch.randn_like(latent_z)
+        noisy_latents = latent_z + noise_targets * 0.1 # Denoiser tracking standard layer
+
+        # Predict noise parameters based on text conditioning maps under denoise=False constraints
+        predicted_noise = omni_voice_core(text_tokens, noisy_latents, timesteps)
+        diffusion_loss = F.mse_loss(predicted_noise, noise_targets)
+
+        # --- JOINT MULTI-OBJECTIVE WEIGHTED BACKPROPAGATION PASS ---
+        total_loss = diffusion_loss + (0.1 * recon_loss) + (0.005 * kl_loss)
+        total_loss.backward()
         
-        epoch_diffusion_loss = 0.0
-        epoch_recon_loss = 0.0
-        
-        for batch_idx, (waveforms, text_tokens) in enumerate(data_loader):
-            waveforms = waveforms.to(device)     # Shape: [Batch, 1, Audio_Samples]
-            text_tokens = text_tokens.to(device) # Shape: [Batch, Sequence_Len]
-            
-            optimizer.zero_grad()
+        # Protect gradients against explosive clipping errors
+        torch.nn.utils.clip_grad_norm_(combined_params, max_norm=1.0)
+        optimizer.step()
 
-            # --- SUB-OBJECTIVE A: CONTINUOUS TOKENIZER VAE TRAIN ---
-            # Pass physical audio through the VAE encoder/decoder blocks
-            reconstructed_audio, mu, logvar = audio_tokenizer(waveforms)
-            
-            # Reconstruction Loss: Ensures output sounds like input
-            recon_loss = F.mse_loss(reconstructed_audio, waveforms)
-            # KL Divergence: Smooths out hidden token clusters
-            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / waveforms.size(0)
+        global_step += 1
 
-            # --- SUB-OBJECTIVE B: TEXT-CONDITIONED LATENT DIFFUSION TRAIN ---
-            # Re-extract clean latent variables via the encoder distribution pass
-            with torch.no_grad():
-                latent_z, _, _ = audio_tokenizer.encoder(waveforms)
-                
-            # Sample random execution index states across diffusion timelines
-            timesteps = torch.randint(0, omni_voice_core.max_steps, (waveforms.size(0),), device=device)
-            
-            # Generate random target shapes matching the latent layout dimensions
-            noise_targets = torch.randn_like(latent_z)
-            
-            # Inject forward-diffusion noise onto clean audio latent tensors
-            # Operates directly under the 'denoise = False' training parameters
-            noisy_latents = latent_z + noise_targets * 0.1
-            
-            # Predict noise artifacts across text prompt boundaries
-            predicted_noise = omni_voice_core(text_tokens, noisy_latents, timesteps)
-            diffusion_loss = F.mse_loss(predicted_noise, noise_targets)
+        # Print training loss stats to console every 10 steps
+        if global_step % 10 == 0 or global_step == 1:
+            print(f" Step [{global_step:05d}/{max_steps:05d}] | Total Loss: {total_loss.item():.5f} | Diffusion: {diffusion_loss.item():.5f} | VAE Recon: {recon_loss.item():.5f}")
 
-            # --- COMPOSITE TOTAL BACKPROPAGATION PASS ---
-            # Weighted loss compilation combining acoustic features and language features
-            total_loss = diffusion_loss + (0.1 * recon_loss) + (0.005 * kl_loss)
-            
-            total_loss.backward()
-            optimizer.step()
+        # Checkpoint Lifecycle Auto-Save Trigger
+        if global_step % checkpoint_interval == 0:
+            save_system_checkpoint(audio_tokenizer, omni_voice_core, optimizer, global_step)
 
-            # Accumulate logs for console tracking
-            epoch_diffusion_loss += diffusion_loss.item()
-            epoch_recon_loss += recon_loss.item()
-
-        avg_diff = epoch_diffusion_loss / len(data_loader)
-        avg_rec = epoch_recon_loss / len(data_loader)
-        print(f" Epoch {epoch:02d}/{epochs:02d} | Avg Diffusion Loss: {avg_diff:.5f} | Avg VAE Reconstruction: {avg_rec:.5f}")
-
-    # 5. ZERO-SHOT SPEECH SYNTHESIS GENERATION INFERENCE
-    print("\n" + "=" * 85)
-    print("[+] Model Optimization Complete. Initializing Zero-Shot Generation Loop...")
-    print("=" * 85)
+    # 7. PRODUCTION ZERO-SHOT SPEECH INFERENCE TARGET RUN
+    print("\n" + "=" * 90)
+    print("[+] Master Core Optimization Steps Achieved. Running Zero-Shot Inference Test...")
+    print("=" * 90)
     
-    # Define an unconditioned multi-lingual multi-character sentence prompt block
-    target_prompt = "Hello world! Building a production grade text to speech rival system step by step. 这是一个全功能系统。"
-    print(f"[*] Target Universal Prompt: '{target_prompt}'")
+    test_phrase = "System implementation initialized successfully. Audio generated cleanly from the text array."
+    print(f"[*] Target Generation Phrase: '{test_phrase}'")
     
-    # Process string into character token format using dataset method logic
-    encoded_bytes = [b for b in target_prompt.encode('utf-8')]
+    # Process string prompt configuration directly to standard bytes sequence lines
+    encoded_bytes = [b for b in test_phrase.encode('utf-8')]
     inference_tokens = torch.tensor([encoded_bytes], dtype=torch.long, device=device)
     
     audio_tokenizer.eval()
     omni_voice_core.eval()
     
-    # Estimate compressed frame dimensions (~7.5 Hz framework mapping ratio)
-    target_compressed_frames = max_audio_samples // 64 # Matches tokenizer compression factor
-    
+    target_compressed_frames = max_audio_samples // 64 # Matches VAE structural compression ratios
+
     with torch.no_grad():
-        print("[*] Running reverse diffusion denoising chain across text spaces...")
-        # Step A: Synthesize structural latents out of pure white noise parameters
-        denoised_latents = omni_voice_core.generate_latent_trajectory(
+        print("[*] Running reverse diffusion denoising trajectory maps...")
+        generated_latents = omni_voice_core.generate_latent_trajectory(
             inference_tokens, 
             num_target_frames=target_compressed_frames
         )
         
-        print("[*] Passing denoised code trajectories through the audio decoder array...")
-        # Step B: Project code configurations through the VAE decoder to create an analog wave
-        generated_waveform = audio_tokenizer.decoder(denoised_latents)
-        
-    # Move tensor data safely back to the CPU memory banks for file writing
-    output_waveform = generated_waveform.squeeze(0).cpu()
-    output_filename = "omnivoice_rival_output.wav"
+        print("[*] Projecting pristine code states through the structural decoder channels...")
+        synthesized_waveform = audio_tokenizer.decoder(generated_latents)
+
+    # Write output audio safely back down onto local workspace folders
+    final_output_tensor = synthesized_waveform.squeeze(0).cpu()
+    output_wav_name = "production_omnivoice_output.wav"
     
-    print(f"[*] Exporting final physical audio asset file to disk: '{output_filename}'...")
-    torchaudio.save(output_filename, output_waveform, sample_rate=target_sample_rate)
-    print("[+] Process Complete! File generated successfully with proper dimensions.")
+    print(f"[*] Exporting physical soundwave asset file to path location: '{output_wav_name}'...")
+    torchaudio.save(output_wav_name, final_output_tensor, sample_rate=target_sample_rate)
+    print("[+] Complete. All systems executed successfully.")
 
 
 if __name__ == "__main__":
-    # Execute the master system routine pipeline
-    execute_complete_pipeline(dataset_directory="./emilia_raw_data", epochs=3, batch_size=2)
+    # Execute training runtime setup configuration metrics
+    run_production_training_framework(max_steps=1000, checkpoint_interval=200, batch_size=2)
