@@ -1,11 +1,14 @@
 # =====================================================================
-# High-Fidelity Transformer Backbone and Latent Diffusion Head
+# Multi-Modal Diffusion Model with Contextual Voice Cloning Integration
 # =====================================================================
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+
+# Import our dedicated acoustic style extractor modules
+from voice_cloner import InsaneVoiceClonerEncoder, CrossAttentionFusionBlock
 
 class DiffusionTimeEmbedding(nn.Module):
     """
@@ -22,14 +25,11 @@ class DiffusionTimeEmbedding(nn.Module):
         self.embed_dim = embed_dim
 
     def forward(self, timesteps):
-        # Generate sinusoidal positional phase features from raw step scalar values
         half_dim = self.embed_dim // 2
         embeddings = math.log(10000.0) / (half_dim - 1)
         embeddings = torch.exp(torch.arange(half_dim, device=timesteps.device) * -embeddings)
         embeddings = timesteps.unsqueeze(1) * embeddings.unsqueeze(0)
         embeddings = torch.cat([torch.sin(embeddings), torch.cos(embeddings)], dim=-1)
-        
-        # Project through fully connected non-linear configurations
         return self.linear_layers(embeddings)
 
 
@@ -40,126 +40,113 @@ class NonAutoregressiveDiffusionHead(nn.Module):
     """
     def __init__(self, embed_dim=256):
         super().__init__()
-        # Combines the noisy audio latents with structural text matrices
         self.conv_in = nn.Conv1d(embed_dim * 2, embed_dim, kernel_size=3, padding=1)
         self.gelu = nn.GELU()
-        
-        # Deep convolutional residual layers tracking subtle acoustic changes
         self.conv_mid = nn.Conv1d(embed_dim, embed_dim, kernel_size=5, padding=2)
         self.conv_out = nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1)
 
-    def forward(self, noisy_audio_latents, text_condition_context, time_vectors):
+    def forward(self, noisy_audio_latents, multi_modal_context, time_vectors):
         """
         Args:
             noisy_audio_latents (Tensor): [Batch, Embed_Dim, Sequence_Frames]
-            text_condition_context (Tensor): [Batch, Embed_Dim, Sequence_Frames]
+            multi_modal_context (Tensor): [Batch, Embed_Dim, Sequence_Frames]
             time_vectors (Tensor): [Batch, Embed_Dim]
         """
-        # Broadcast temporal metrics across the sequence timeline spatial shape
-        t_spatial = time_vectors.unsqueeze(-1) # Dimension -> [Batch, Embed_Dim, 1]
+        t_spatial = time_vectors.unsqueeze(-1) # [Batch, Embed_Dim, 1]
+        conditioning = multi_modal_context + t_spatial
         
-        # Inject textual background context combined with time positioning
-        conditioning = text_condition_context + t_spatial
-        
-        # Concat noisy inputs and text conditioning down the feature channel axis
+        # Concat noisy inputs and target conditioning down the feature channel axis
         x = torch.cat([noisy_audio_latents, conditioning], dim=1)
         
-        # Map through processing block to estimate residual structural noise
         h = self.gelu(self.conv_in(x))
-        h = h + self.gelu(self.conv_mid(h)) # Residual layer integration
+        h = h + self.gelu(self.conv_mid(h))
         estimated_noise = self.conv_out(h)
-        
         return estimated_noise
 
 
 class HighFidelityOmniVoiceEngine(nn.Module):
     """
-    The unified multi-modal engine. Combines the text transformer and the
-    latent diffusion head to construct clean speech representations from text.
+    The unified multi-modal core engine. Integrates raw text encoding, 
+    cross-attention voice cloning extraction, and latent diffusion denoising loops.
     """
     def __init__(self, vocab_size=256, embed_dim=256, max_diffusion_steps=100):
         super().__init__()
         self.embed_dim = embed_dim
         self.max_steps = max_diffusion_steps
         
-        # Core 1: Unified multi-lingual vocabulary layer (0-255 Byte mapping)
+        # 1. Text processing layers
         self.text_embedding = nn.Embedding(vocab_size, embed_dim)
-        
-        # Core 2: Cross-attention Multi-Head Transformer Encoder Array
         transformer_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim, 
-            nhead=8, 
-            dim_feedforward=512, 
-            batch_first=True, 
-            activation='gelu'
+            d_model=embed_dim, nhead=8, dim_feedforward=512, batch_first=True, activation='gelu'
         )
         self.transformer_core = nn.TransformerEncoder(transformer_layer, num_layers=4)
         
-        # Core 3: Diffusion conditioning components
+        # 2. Zero-Shot Voice Cloning Integration (The VibeVoice Killer)
+        self.speaker_encoder = InsaneVoiceClonerEncoder(embed_dim)
+        self.style_fusion_layer = CrossAttentionFusionBlock(embed_dim)
+        
+        # 3. Diffusion modeling layers
         self.time_encoder = DiffusionTimeEmbedding(embed_dim)
         self.diffusion_head = NonAutoregressiveDiffusionHead(embed_dim)
 
-    def forward(self, text_tokens, noisy_latents, timesteps):
+    def forward(self, text_tokens, reference_waveform, noisy_latents, timesteps):
         """
-        Executes a training pass. Contextually aligns text tokens to predict noise.
+        Executes a conditional voice-cloning training pass.
         """
-        # 1. Project characters through global embedding spaces
+        # Step A: Parse characters through text transformer core
         text_emb = self.text_embedding(text_tokens) * math.sqrt(self.embed_dim)
+        text_features = self.transformer_core(text_emb) # [Batch, Text_Len, Embed_Dim]
         
-        # 2. Extract deep contextual language features
-        text_context = self.transformer_core(text_emb) # Dimensions -> [Batch, Length, Embed_Dim]
+        # Step B: Extract high-density multi-scale style tokens from reference speech
+        speaker_style_tokens = self.speaker_encoder(reference_waveform) # [Batch, Style_Frames, Embed_Dim]
         
-        # Transpose to align with convolutional channel structures [Batch, Embed_Dim, Length]
-        text_context = text_context.transpose(1, 2)
+        # Step C: Fuse text and speaker style dynamically using Multi-Head Cross-Attention
+        fused_context = self.style_fusion_layer(text_features, speaker_style_tokens) # [Batch, Text_Len, Embed_Dim]
         
-        # 3. Dynamic Timeline Interpolation: Stretch text frames to match audio frame sizes
-        if text_context.size(2) != noisy_latents.size(2):
-            text_context = F.interpolate(
-                text_context, 
-                size=noisy_latents.size(2), 
-                mode='linear', 
-                align_corners=False
+        # Step D: Align matching dimensions to match target audio layout
+        fused_context = fused_context.transpose(1, 2) # [Batch, Embed_Dim, Text_Len]
+        if fused_context.size(2) != noisy_latents.size(2):
+            fused_context = F.interpolate(
+                fused_context, size=noisy_latents.size(2), mode='linear', align_corners=False
             )
             
-        # 4. Process time parameters
+        # Step E: Process tracking metrics and estimate target noise
         time_vectors = self.time_encoder(timesteps)
-        
-        # 5. Estimate target noise vectors
-        predicted_noise = self.diffusion_head(noisy_latents, text_context, time_vectors)
+        predicted_noise = self.diffusion_head(noisy_latents, fused_context, time_vectors)
         return predicted_noise
 
     @torch.no_grad()
-    def generate_latent_trajectory(self, text_tokens, num_target_frames=64):
+    def generate_latent_trajectory(self, text_tokens, reference_waveform, num_target_frames=64):
         """
         Inference Mode: Performs the reverse diffusion sequence. Converts plain text tokens
-        into clean acoustic code frames by removing random noise step-by-step.
+        and a unique reference clip into matching acoustic latent frames zero-shot.
         """
         self.eval()
         device = text_tokens.device
         batch_size = text_tokens.size(0)
         
-        # Initialize an entirely random Gaussian vector frame field canvas
+        # Pre-compute cross-attention multi-modal conditioning maps
+        text_emb = self.text_embedding(text_tokens) * math.sqrt(self.embed_dim)
+        text_features = self.transformer_core(text_emb)
+        speaker_style_tokens = self.speaker_encoder(reference_waveform)
+        
+        fused_context = self.style_fusion_layer(text_features, speaker_style_tokens).transpose(1, 2)
+        fused_context = F.interpolate(fused_context, size=num_target_frames, mode='linear', align_corners=False)
+        
+        # Initialize canvas from white noise fields
         xt = torch.randn(batch_size, self.embed_dim, num_target_frames, device=device)
         
-        # Pre-compute textual language configurations
-        text_emb = self.text_embedding(text_tokens) * math.sqrt(self.embed_dim)
-        text_context = self.transformer_core(text_emb).transpose(1, 2)
-        text_context = F.interpolate(text_context, size=num_target_frames, mode='linear', align_corners=False)
-        
-        # Progressively denoise the canvas, matching the denoise=False framework
+        # Iteratively strip out noise matching the denoise=False framework
         for step in reversed(range(self.max_steps)):
-            # Broaden scalar step identifiers into parallel batch processing variables
             t_tensor = torch.full((batch_size,), step, dtype=torch.long, device=device)
             time_vectors = self.time_encoder(t_tensor)
             
-            # Predict noise distributions
-            predicted_noise = self.diffusion_head(xt, text_context, time_vectors)
+            predicted_noise = self.diffusion_head(xt, fused_context, time_vectors)
             
-            # Gradually remove the predicted noise component
-            step_size = 0.015 # Static inference scheduler step delta
+            step_size = 0.015
             xt = xt - step_size * predicted_noise
             
-        return xt # Returns the pristine, fully-denoised continuous structural latent frames
+        return xt
 
 
 # =====================================================================
@@ -168,21 +155,20 @@ class HighFidelityOmniVoiceEngine(nn.Module):
 if __name__ == "__main__":
     print("[*] Running verification suite for File 3 (model.py)...")
     
-    # Initialize the complete core language engine
-    model_engine = HighFidelityOmniVoiceEngine(embed_dim=256, max_diffusion_steps=100)
+    # Initialize our upgraded model engine
+    model_engine = HighFidelityOmniVoiceEngine(embed_dim=256, max_diffusion_steps=50)
     
-    # Simulate data dimensions out of our dataset parser components
-    mock_text_tokens = torch.randint(0, 255, (2, 35))       # Batch of 2 items, 35 characters long
-    mock_audio_latents = torch.randn(2, 256, 500)         # Batch of 2 items, 500 audio frames deep
-    mock_timesteps = torch.randint(0, 100, (2,))          # Random diffusion training steps
+    # Simulate a multi-modal training snapshot dataset setup
+    mock_text_tokens = torch.randint(0, 255, (2, 30))       # Batch of 2, 30 text bytes
+    mock_ref_audio = torch.randn(2, 1, 48000)             # Batch of 2, 3-second reference recordings
+    mock_audio_latents = torch.randn(2, 256, 120)         # Batch of 2, 120 target frame latents
+    mock_timesteps = torch.randint(0, 50, (2,))           # Random diffusion schedule states
     
-    print("[*] Executing forward training data-flow passes...")
-    predicted_noise_output = model_engine(mock_text_tokens, mock_audio_latents, mock_timesteps)
+    print("[*] Testing upgraded cross-attention training forward path...")
+    predicted_noise_output = model_engine(mock_text_tokens, mock_ref_audio, mock_audio_latents, mock_timesteps)
+    print(f" -> Predicted Noise Output Shape : {list(predicted_noise_output.shape)}")
     
-    print("\n[+] Verification Check Passed. Core Model Architecture Layers Validated:")
-    print(f" -> Predicted Residual Noise Matrix Shape: {list(predicted_noise_output.shape)} (Matches latent target fields)")
-    
-    print("\n[*] Testing reverse-diffusion generation inference path...")
-    generated_latents = model_engine.generate_latent_trajectory(mock_text_tokens, num_target_frames=120)
-    print(f" -> Synthesized Generative Latents Shape : {list(generated_latents.shape)} [Pristine Denoised Output State]")
-    print("-" * 75)
+    print("\n[*] Testing zero-shot cloning synthesis inference path...")
+    generated_latents = model_engine.generate_latent_trajectory(mock_text_tokens, mock_ref_audio, num_target_frames=100)
+    print(f" -> Clone Generative Latents Shape: {list(generated_latents.shape)} [Successfully Denoised]")
+    print("-" * 85)
